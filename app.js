@@ -8,6 +8,26 @@ const DEF = { done: {}, srs: {}, xp: 0, streak: { last: null, n: 0 }, set: { slo
 let st;
 try { st = Object.assign(structuredClone(DEF), JSON.parse(localStorage.getItem(KEY) || '{}')); } catch (e) { st = structuredClone(DEF); }
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify(st)); } catch (e) {} };
+const TOTAL = DAYS.length;
+
+// prijelaz sa stare podjele (30 dana) na lekcije
+function migrate() {
+  if (st.v === 2) return;
+  const oldDone = st.done || {}, oldSrs = st.srs || {};
+  const done = {}, srs = {};
+  for (const id in oldSrs) if (MIGR[id]) srs[MIGR[id]] = oldSrs[id];
+  const okL = n => { const ds = MIGR_DAYS[n] || []; return ds.length > 0 && ds.every(d => oldDone[d] != null); };
+  const when = n => Math.max(...(MIGR_DAYS[n] || []).map(d => oldDone[d] || 0));
+  for (const L of DAYS) {
+    if (!L.c && okL(L.n)) done[L.n] = when(L.n);
+    if (L.c) {
+      const prev = DAYS[L.n - 2], nxt = DAYS[L.n];
+      if (prev && okL(prev.n) && nxt && !nxt.c && okL(nxt.n)) done[L.n] = when(prev.n);
+    }
+  }
+  st.done = done; st.srs = srs; st.v = 2; save();
+}
+migrate();
 const today = () => Math.floor((Date.now() - new Date().getTimezoneOffset() * 60000) / 864e5);
 
 let view = 'home', viewDay = null, S = null, dictQ = '';
@@ -18,6 +38,12 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;',
 const shuffle = a => { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.random() * (i + 1) | 0; [a[i], a[j]] = [a[j], a[i]]; } return a; };
 const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
 const toks = s => s[0].split(' ');
+const formula = d => {
+  if (d.c) return 'Ponavljanje i miješanje obrazaca';
+  if (d.pats.length) return d.pats.map(p => p.f).join('  ·  ');
+  for (let n = d.n - 1; n >= 1; n--) { const p = DAYS[n - 1].pats; if (p && p.length) return p[p.length - 1].f; }
+  return '';
+};
 function romajiLine(s) {
   const end = /[?]$/.test(s[2]) ? '?' : /!$/.test(s[2]) ? '!' : '.';
   return cap(s[0]) + end;
@@ -103,8 +129,8 @@ function startLesson(n, practice) {
   const steps = [{ t: 'intro' }];
   d.w.forEach((w, i) => steps.push({ t: 'learn', id: `w${n}_${i}` }));
   shuffle(d.w.map((w, i) => i)).forEach(i => steps.push({ t: 'quiz', id: `w${n}_${i}` }));
-  steps.push({ t: 'pattern' });
-  d.s.forEach((s, i) => steps.push({ t: toks(s).length >= 2 ? 'build' : 'speak', id: `s${n}_${i}` }));
+  d.pats.forEach((p, k) => steps.push({ t: 'pattern', k }));
+  (d.c ? shuffle(d.s.map((s, i) => i)) : d.s.map((s, i) => i)).forEach(i => steps.push({ t: toks(d.s[i]).length >= 2 ? 'build' : 'speak', id: `s${n}_${i}` }));
   shuffle(d.s.map((s, i) => i)).slice(0, 4).forEach(i => steps.push({ t: 'speak', id: `s${n}_${i}` }));
   S = { kind: 'lesson', day: n, practice: !!practice, steps, i: 0, ui: {}, ok: 0, total: 0, xp: 0, retried: {} };
   view = 'sess'; render(); afterRender();
@@ -158,7 +184,7 @@ function afterRender() {
 function sessView() {
   if (S.finished) {
     const pct = S.total ? Math.round(100 * S.ok / S.total) : 100;
-    const title = S.kind === 'review' ? 'Ponavljanje gotovo' : `Dan ${S.day} gotov`;
+    const title = S.kind === 'review' ? 'Ponavljanje gotovo' : `Lekcija ${S.day} gotova`;
     return `<div class="stage" style="justify-content:center;text-align:center">
       <div class="done-big">お疲れ</div>
       <div class="note" style="margin:6px 0 18px">otsukare — dobro odrađeno</div>
@@ -179,9 +205,10 @@ function sessView() {
   const D = it && it.data;
 
   if (step.t === 'intro') {
-    body = `<div class="lbl">Dan ${d.n} od 30</div><div class="big">${esc(d.t)}</div>
-      <div class="pat">${esc(d.p.f)}</div>
-      <p class="note">Danas: ${d.w.length} novih riječi i jedan obrazac. Riječi prvo upoznaš, onda od njih slažeš rečenice i izgovaraš ih naglas.</p>
+    body = `<div class="lbl">Lekcija ${d.n} od ${TOTAL}</div><div class="big">${esc(d.t)}</div>
+      <div class="pat">${esc(formula(d))}</div>
+      <p class="note">${d.c ? 'Nema novih riječi. Slažeš i izgovaraš rečenice koje miješaju obrasce iz prethodnih lekcija.'
+        : `${d.w.length} novih riječi${d.pats.length ? (d.pats.length > 1 ? ' i dva obrasca' : ' i jedan obrazac') : ''}. Riječi prvo upoznaš, onda od njih slažeš rečenice i izgovaraš ih naglas.`}</p>
       <div class="spacer"></div><div class="acts"><button class="btn red" data-a="next">Kreni</button></div>`;
   }
   else if (step.t === 'learn') {
@@ -204,10 +231,11 @@ function sessView() {
       <div class="spacer"></div>${u.choice != null ? '<div class="acts"><button class="btn" data-a="next">Dalje</button></div>' : ''}`;
   }
   else if (step.t === 'pattern') {
-    body = `<div class="lbl">Obrazac dana · ${esc(d.p.t)}</div><div class="pat">${esc(d.p.f)}</div>
-      <p style="font-size:17px">${esc(d.p.e)}</p>
-      <div>${d.s.slice(0, 3).map((s, k) => exRow(s, `s${d.n}_${k}`)).join('')}</div>
-      <div class="spacer"></div><div class="acts"><button class="btn red" data-a="next">Složi rečenice</button></div>`;
+    const P = d.pats[step.k];
+    body = `<div class="lbl">Obrazac · ${esc(P.t)}</div><div class="pat">${esc(P.f)}</div>
+      <p style="font-size:17px">${esc(P.e)}</p>
+      <div>${d.s.map((s, k) => [s, k]).slice(step.k * 3, step.k * 3 + 3).map(([s, k]) => exRow(s, `s${d.n}_${k}`)).join('')}</div>
+      <div class="spacer"></div><div class="acts"><button class="btn red" data-a="next">${d.s.length ? 'Dalje' : 'Završi'}</button></div>`;
   }
   else if (step.t === 'build') {
     if (!u.tiles) {
@@ -271,34 +299,33 @@ function exRow(s, id) {
 /* ---------- glavni ekrani ---------- */
 function homeView() {
   const nd = nextDay(), due = dueIds().length, lw = learnedWords().length, total = DAYS.reduce((a, d) => a + d.w.length, 0);
-  const doneToday = Object.values(st.done).includes(today());
   let html = `<div class="top"><div class="brand"><div class="sun">言</div>Kotoba 200</div>
     <div class="stats"><span class="chip">🔥 ${streakNow()}</span><span class="chip">${st.xp} XP</span></div></div>`;
   if (due) html += `<div class="card hero"><div class="k">Ponavljanje</div><h2>${due} ${due === 1 ? 'stavka čeka' : due < 5 ? 'stavke čekaju' : 'stavki čeka'}</h2>
     <div class="f">Najprije ponovi, onda nova lekcija.</div><button class="btn red" data-a="review">Ponovi sada</button></div>`;
   if (nd) {
     const d = DAYS[nd - 1];
-    html += `<div class="card hero"><div class="k">Dan ${nd} / 30</div><h2>${esc(d.t)}</h2><div class="f">${esc(d.p.f)}</div>
-      ${doneToday ? '<p class="note" style="margin-top:-6px">Današnja lekcija je odrađena. Možeš nastaviti ako imaš volje.</p>' : ''}
-      <button class="btn ${due ? '' : 'red'}" data-a="lesson" data-n="${nd}">${doneToday ? 'Nastavi s danom ' + nd : 'Započni lekciju'}</button></div>`;
+    html += `<div class="card hero"><div class="k">Lekcija ${nd} / ${TOTAL}${d.c ? ' · kombiniranje' : ''}</div><h2>${esc(d.t)}</h2><div class="f">${esc(formula(d))}</div>
+      <button class="btn ${due ? '' : 'red'}" data-a="lesson" data-n="${nd}">Započni lekciju</button></div>`;
   } else {
-    html += `<div class="card hero"><div class="k">Svih 30 dana</div><h2>Gotovo! すごい!</h2><div class="f">Nastavi s ponavljanjem svaki dan da riječi ostanu.</div></div>`;
+    html += `<div class="card hero"><div class="k">Sve lekcije</div><h2>Gotovo! すごい!</h2><div class="f">Nastavi s ponavljanjem svaki dan da riječi ostanu.</div></div>`;
   }
   html += `<div class="card"><div style="display:flex;justify-content:space-between;margin-bottom:8px"><b>Naučene riječi</b><span class="note">${lw} / ${total}</span></div>
     <div class="bar"><i style="width:${100 * lw / total}%"></i></div></div>
-    <div class="sec">30 dana</div><div class="days">${DAYS.map(d => {
+    <div class="sec">${TOTAL} lekcija</div><div class="days">${DAYS.map(d => {
       const c = st.done[d.n] != null ? 'done' : d.n === nd ? 'cur' : 'lock';
-      return `<button class="day ${c}" data-a="day" data-n="${d.n}">${d.n}</button>`;
+      return `<button class="day ${c} ${d.c ? 'combo' : ''}" data-a="day" data-n="${d.n}">${d.c ? '✦' : d.n}</button>`;
     }).join('')}</div>`;
   return html;
 }
 function dayView() {
   const d = DAYS[viewDay - 1], ok = st.done[d.n] != null || d.n === nextDay();
-  return `<div class="top"><button class="x" data-a="home" aria-label="Natrag">‹</button><div class="brand" style="font-size:19px">Dan ${d.n} · ${esc(d.t)}</div></div>
-    <div class="pat">${esc(d.p.f)}</div><p>${esc(d.p.e)}</p>
-    <div class="sec">Riječi</div><div class="card" style="padding:4px 16px">${d.w.map((w, i) => `<div class="ex"><div class="t"><div class="r">${esc(w[0])}</div><div class="h">${esc(w[2])}</div></div><button class="mini" data-a="sayid" data-id="w${d.n}_${i}">${I.spk}</button></div>`).join('')}</div>
+  return `<div class="top"><button class="x" data-a="home" aria-label="Natrag">‹</button><div class="brand" style="font-size:19px">${d.n}. ${esc(d.t)}</div></div>
+    ${d.c ? '<p class="note">Lekcija kombiniranja: rečenice koje miješaju obrasce iz prethodnih lekcija.</p>' : ''}
+    ${d.pats.map(p => `<div class="pat">${esc(p.f)}</div><p>${esc(p.e)}</p>`).join('')}
+    ${d.w.length ? '<div class="sec">Riječi</div>' : ''}<div class="card" style="padding:4px 16px;${d.w.length ? '' : 'display:none'}">${d.w.map((w, i) => `<div class="ex"><div class="t"><div class="r">${esc(w[0])}</div><div class="h">${esc(w[2])}</div></div><button class="mini" data-a="sayid" data-id="w${d.n}_${i}">${I.spk}</button></div>`).join('')}</div>
     <div class="sec">Rečenice</div><div class="card" style="padding:4px 16px">${d.s.map((s, i) => exRow(s, `s${d.n}_${i}`)).join('')}</div>
-    ${ok ? `<button class="btn red" data-a="lesson" data-n="${d.n}" data-p="${st.done[d.n] != null ? 1 : 0}">${st.done[d.n] != null ? 'Ponovi lekciju' : 'Započni lekciju'}</button>` : '<p class="note">Ovaj dan se otključava kad završiš prethodne.</p>'}`;
+    ${ok ? `<button class="btn red" data-a="lesson" data-n="${d.n}" data-p="${st.done[d.n] != null ? 1 : 0}">${st.done[d.n] != null ? 'Ponovi lekciju' : 'Započni lekciju'}</button>` : '<p class="note">Ova lekcija se otključava kad završiš prethodne.</p>'}`;
 }
 function dictView() {
   const q = dictQ.trim().toLowerCase();
@@ -306,7 +333,7 @@ function dictView() {
   const list = all.filter(x => !q || x.w[0].toLowerCase().includes(q) || x.w[2].toLowerCase().includes(q));
   return `<div class="top"><div class="brand">Rječnik</div><div class="stats"><span class="chip">${all.length} riječi</span></div></div>
     <input class="search" id="q" placeholder="Traži (romaji ili hrvatski)" value="${esc(dictQ)}">
-    ${all.length ? `<div class="card" style="padding:4px 16px">${list.map(x => `<div class="ex"><div class="t"><div class="r">${esc(x.w[0])}</div><div class="h">${esc(x.w[2])} · dan ${x.day}</div></div><button class="mini" data-a="sayid" data-id="${x.id}">${I.spk}</button></div>`).join('') || '<p class="note">Nema rezultata.</p>'}</div>`
+    ${all.length ? `<div class="card" style="padding:4px 16px">${list.map(x => `<div class="ex"><div class="t"><div class="r">${esc(x.w[0])}</div><div class="h">${esc(x.w[2])} · lekcija ${x.day}</div></div><button class="mini" data-a="sayid" data-id="${x.id}">${I.spk}</button></div>`).join('') || '<p class="note">Nema rezultata.</p>'}</div>`
       : '<p class="note">Ovdje će se skupljati riječi iz završenih lekcija.</p>'}`;
 }
 function setView() {
@@ -329,7 +356,7 @@ function setView() {
 }
 function nav() {
   const b = (v, ic, t) => `<button class="${view === v || (v === 'home' && view === 'day') ? 'on' : ''}" data-a="go" data-v="${v}">${ic}${t}</button>`;
-  return `<nav class="nav"><div>${b('home', I.home, 'Danas')}${b('dict', I.book, 'Rječnik')}${b('set', I.gear, 'Postavke')}</div></nav>`;
+  return `<nav class="nav"><div>${b('home', I.home, 'Početna')}${b('dict', I.book, 'Rječnik')}${b('set', I.gear, 'Postavke')}</div></nav>`;
 }
 function render() {
   const app = $('#app');
@@ -349,7 +376,7 @@ document.addEventListener('click', e => {
     case 'home': view = 'home'; render(); break;
     case 'day': {
       const n = +el.dataset.n, nd = nextDay();
-      if (st.done[n] == null && n !== nd) { toast(`Prvo završi dan ${nd}`); break; }
+      if (st.done[n] == null && n !== nd) { toast(`Prvo završi lekciju ${nd}`); break; }
       viewDay = n; view = 'day'; window.scrollTo(0, 0); render(); break;
     }
     case 'lesson': startLesson(+el.dataset.n, el.dataset.p === '1'); break;
