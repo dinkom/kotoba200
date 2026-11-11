@@ -1,5 +1,5 @@
 // Kotoba 200 — offline cache. Povećaj VERZIJU kad mijenjaš datoteke.
-const VERZIJA = 'kotoba-v1';
+const VERZIJA = 'kotoba-v2';
 const FILES = ['./', 'index.html', 'app.js', 'data.js', 'manifest.json', 'icon-192.png', 'icon-512.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(VERZIJA).then(c => c.addAll(FILES))); self.skipWaiting(); });
 self.addEventListener('activate', e => {
